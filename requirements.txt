@@ -1,3 +1,14 @@
-# requirements.txt
+# requirements.txt (Versión Definitiva para Vercel)
 Flask>=2.0
 openai>=1.0
+
+# Dependencias necesarias para la librería 'openai'
+pydantic
+typing-extensions
+httpx
+anyio
+tqdm
+sniffio
+distro
+httpcore
+h11
