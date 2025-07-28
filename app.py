@@ -1,54 +1,49 @@
-# app.py (Versión Gemini - Corregida y Definitiva)
+# app.py (Versión Final Definitiva - Inicialización Segura)
 import os
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# La clave de Gemini se leerá de las variables de entorno de Vercel.
-try:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("ADVERTENCIA: La variable de entorno GEMINI_API_KEY no está configurada.")
-    else:
-        genai.configure(api_key=api_key)
-except Exception as e:
-    print(f"Error al configurar el cliente de Gemini: {e}")
+# NOTA: Ya no configuramos 'genai' aquí fuera.
 
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
-    if not getattr(genai, 'API_KEY', None):
-        return jsonify({'error': 'El servidor no tiene una clave de Gemini configurada'}), 500
-    
     try:
+        # --- CORRECCIÓN CRÍTICA: Mover la configuración y la inicialización DENTRO de la función ---
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            # Este error ahora solo se lanzará si la variable de entorno realmente falta
+            return jsonify({'error': 'La variable de entorno GEMINI_API_KEY no está configurada en el servidor.'}), 500
+        
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        # -----------------------------------------------------------------------------------------
+        
         data = request.get_json()
         if not data or 'messages' not in data:
-            return jsonify({'error': 'No se proporcionó un historial de mensajes'}), 400
+            return jsonify({'error': 'La petición no contenía un historial de mensajes válido.'}), 400
 
-        model = genai.GenerativeModel('gemini-pro')
-        
-        # --- CORRECCIÓN CRÍTICA: Transformar el historial al formato que espera Gemini ---
+        # Transformar el historial al formato que espera Gemini
         gemini_history = []
         for msg in data['messages']:
-            # Ignoramos el mensaje de sistema, Gemini Pro lo gestiona de otra forma
             if msg.get('role') in ['user', 'model']:
                 gemini_history.append({
                     'role': msg['role'],
-                    'parts': [{'text': msg.get('content', '')}] # Convertir 'content' a 'parts'
+                    'parts': [{'text': msg.get('content', '')}]
                 })
         
-        # Si el historial está vacío (solo tenía un mensaje de sistema), no hacer la llamada
         if not gemini_history:
              return jsonify({'text': "Hola, soy tu asistente de salud. ¿En qué puedo ayudarte?"})
 
-        # Llamada segura a Gemini desde nuestro servidor
+        # Llamada a Gemini
         response = model.generate_content(gemini_history)
         
-        # Devolvemos una respuesta JSON simple a la app Kivy
         return jsonify({'text': response.text})
 
     except Exception as e:
-        print(f"Error inesperado en el proxy de Gemini: {e}")
+        # Imprimir el error en los logs de Vercel para depuración
+        print(f"ERROR DETALLADO EN EL SERVIDOR: {e}") 
         return jsonify({'error': f'Ha ocurrido un error interno en el servidor: {str(e)}'}), 500
 
 @app.route('/', methods=['GET'])
