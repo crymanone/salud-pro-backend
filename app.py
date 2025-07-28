@@ -1,11 +1,11 @@
-# app.py
+# app.py (Versión Corregida)
 import os
 import openai
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# La clave se leerá de las variables de entorno de Vercel. ¡Es seguro!
+# La clave se lee de las variables de entorno de Vercel. ¡Es seguro!
 try:
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     if not os.environ.get("OPENAI_API_KEY"):
@@ -30,16 +30,15 @@ def chat_proxy():
             messages=data['messages']
         )
         
-        # Devolvemos la respuesta completa de OpenAI a la app Kivy
-        return response.to_json(), 200
+        # --- CORRECCIÓN: Usar .model_dump() y jsonify para una respuesta JSON estándar ---
+        return jsonify(response.model_dump())
 
     except openai.AuthenticationError:
         return jsonify({'error': 'Clave API de OpenAI inválida o sin fondos. Revisa la configuración del servidor.'}), 500
     except Exception as e:
         print(f"Error inesperado en el proxy: {e}")
-        return jsonify({'error': 'Ha ocurrido un error interno en el servidor'}), 500
+        return jsonify({'error': f'Ha ocurrido un error interno en el servidor: {e}'}), 500
 
-# Añadimos una ruta raíz para comprobar que el servidor funciona
 @app.route('/', methods=['GET'])
 def home():
     return "Servidor del Asistente de Salud PRO funcionando.", 200
