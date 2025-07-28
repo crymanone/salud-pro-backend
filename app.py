@@ -1,4 +1,4 @@
-# app.py (Versión Final Definitiva - Corregido el nombre del modelo)
+# app.py (Versión Final Definitiva - Usando el modelo gemini-1.5-pro-latest)
 import os
 import google.generativeai as genai
 from flask import Flask, request, jsonify
@@ -15,9 +15,9 @@ def chat_proxy():
         
         genai.configure(api_key=api_key)
         
-        # --- CORRECCIÓN FINAL: Usar el nombre de modelo estable y correcto ---
-        model = genai.GenerativeModel('gemini-1.0-pro')
-        # ----------------------------------------------------------------------
+        # --- CORRECCIÓN FINAL: Usar el nombre del modelo más reciente y estable ---
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        # -------------------------------------------------------------------------
         
         data = request.get_json()
         if not data or 'messages' not in data:
