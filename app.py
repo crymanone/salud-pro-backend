@@ -1,44 +1,50 @@
-# app.py (Versión Corregida)
+# app.py (Versión Gemini)
 import os
-import openai
+import google.generativeai as genai
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# La clave se lee de las variables de entorno de Vercel. ¡Es seguro!
+# La clave de Gemini se leerá de las variables de entorno de Vercel.
 try:
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("ADVERTENCIA: La variable de entorno OPENAI_API_KEY no está configurada.")
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("ADVERTENCIA: La variable de entorno GEMINI_API_KEY no está configurada.")
+    else:
+        genai.configure(api_key=api_key)
 except Exception as e:
-    print(f"Error al inicializar el cliente de OpenAI: {e}")
-    client = None
+    print(f"Error al configurar el cliente de Gemini: {e}")
 
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
-    if not client:
-        return jsonify({'error': 'El servidor no tiene una clave de OpenAI configurada'}), 500
+    if not genai.API_KEY:
+        return jsonify({'error': 'El servidor no tiene una clave de Gemini configurada'}), 500
     
     try:
         data = request.get_json()
         if not data or 'messages' not in data:
             return jsonify({'error': 'No se proporcionó un historial de mensajes'}), 400
 
-        # Llamada segura a OpenAI desde nuestro servidor
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=data['messages']
-        )
+        # Preparamos el modelo
+        model = genai.GenerativeModel('gemini-pro')
         
-        # --- CORRECCIÓN: Usar .model_dump() y jsonify para una respuesta JSON estándar ---
-        return jsonify(response.model_dump())
+        # Adaptamos el historial para Gemini (omitiendo el 'system' prompt si no tiene contenido relevante)
+        # Gemini prefiere una alternancia estricta de 'user' y 'model'
+        gemini_history = [
+            msg for msg in data['messages'] if msg['role'] in ['user', 'model']
+        ]
 
-    except openai.AuthenticationError:
-        return jsonify({'error': 'Clave API de OpenAI inválida o sin fondos. Revisa la configuración del servidor.'}), 500
+        # Llamada segura a Gemini desde nuestro servidor
+        response = model.generate_content(gemini_history)
+        
+        # Devolvemos una respuesta JSON simple a la app Kivy
+        return jsonify({'text': response.text})
+
     except Exception as e:
-        print(f"Error inesperado en el proxy: {e}")
-        return jsonify({'error': f'Ha ocurrido un error interno en el servidor: {e}'}), 500
+        print(f"Error inesperado en el proxy de Gemini: {e}")
+        # Devuelve un mensaje de error más detallado a la app
+        return jsonify({'error': f'Ha ocurrido un error interno en el servidor: {str(e)}'}), 500
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Servidor del Asistente de Salud PRO funcionando.", 200
+    return "Servidor del Asistente de Salud PRO (Gemini Edition) funcionando.", 200
