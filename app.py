@@ -1,24 +1,23 @@
-# app.py (Versión Final Definitiva - Inicialización Segura)
+# app.py (Versión Final Definitiva - Corregido el nombre del modelo)
 import os
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# NOTA: Ya no configuramos 'genai' aquí fuera.
-
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
     try:
-        # --- CORRECCIÓN CRÍTICA: Mover la configuración y la inicialización DENTRO de la función ---
+        # Mover la configuración y la inicialización DENTRO de la función
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
-            # Este error ahora solo se lanzará si la variable de entorno realmente falta
             return jsonify({'error': 'La variable de entorno GEMINI_API_KEY no está configurada en el servidor.'}), 500
         
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')
-        # -----------------------------------------------------------------------------------------
+        
+        # --- CORRECCIÓN FINAL: Usar el nombre de modelo estable y correcto ---
+        model = genai.GenerativeModel('gemini-1.0-pro')
+        # ----------------------------------------------------------------------
         
         data = request.get_json()
         if not data or 'messages' not in data:
@@ -42,7 +41,6 @@ def chat_proxy():
         return jsonify({'text': response.text})
 
     except Exception as e:
-        # Imprimir el error en los logs de Vercel para depuración
         print(f"ERROR DETALLADO EN EL SERVIDOR: {e}") 
         return jsonify({'error': f'Ha ocurrido un error interno en el servidor: {str(e)}'}), 500
 
