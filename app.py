@@ -1,4 +1,4 @@
-# app.py (Versión Final con Herramientas Gemini)
+# app.py (Versión Final Definitiva - Tipos de datos corregidos)
 import os
 import google.generativeai as genai
 from flask import Flask, request, jsonify
@@ -31,7 +31,6 @@ def chat_proxy():
         
         genai.configure(api_key=api_key)
         
-        # Le decimos al modelo que tiene una herramienta disponible
         model = genai.GenerativeModel(
             model_name='gemini-1.5-pro-latest',
             tools=[add_medication_tool]
@@ -52,11 +51,10 @@ def chat_proxy():
         if not gemini_history:
              return jsonify({'text': "Hola, ¿en qué puedo ayudarte hoy?"})
 
-        # Iniciamos una sesión de chat para manejar la conversación
         chat = model.start_chat(history=gemini_history)
         response = chat.send_message(
-            gemini_history[-1]['parts'], # Enviamos el último mensaje del usuario
-            safety_settings={ # Ajustes para que sea menos restrictivo
+            gemini_history[-1]['parts'],
+            safety_settings={
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
@@ -64,19 +62,25 @@ def chat_proxy():
             }
         )
 
-        # Comprobamos si la IA decidió usar una herramienta
         if response.candidates[0].content.parts[0].function_call:
             function_call = response.candidates[0].content.parts[0].function_call
             if function_call.name == "add_medication":
-                # La IA quiere añadir un medicamento. Le devolvemos a la app
-                # una orden estructurada con los datos.
                 args = {key: value for key, value in function_call.args.items()}
+                
+                # --- CORRECCIÓN DE TIPO DE DATOS: Aseguramos que sean enteros ---
+                try:
+                    if 'frecuencia_horas' in args:
+                        args['frecuencia_horas'] = int(float(args['frecuencia_horas']))
+                    if 'duracion_dias' in args:
+                        args['duracion_dias'] = int(float(args['duracion_dias']))
+                except (ValueError, TypeError):
+                    return jsonify({'text': "He entendido que quieres añadir un medicamento, pero los valores de frecuencia o duración no son números válidos. ¿Podrías repetirlo?"})
+
                 return jsonify({
                     "action": "add_medication",
                     "params": args
                 })
         
-        # Si no usó una herramienta, devolvemos la respuesta de texto normal
         return jsonify({'text': response.text})
 
     except Exception as e:
@@ -85,4 +89,4 @@ def chat_proxy():
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Servidor del Asistente de Salud PRO (Gemini Edition v2 con Tools) funcionando.", 200
+    return "Servidor del Asistente de Salud PRO (Gemini Edition v3 - Tools & Type Fix) funcionando.", 200
