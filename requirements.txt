@@ -1,6 +1,6 @@
 Flask>=2.0
 google-generativeai>=0.5.0
-gunicorn>=20.0
+
 
 # Dependencias de Google que faltaban
 google-api-python-client
