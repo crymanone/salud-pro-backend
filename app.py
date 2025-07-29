@@ -1,4 +1,4 @@
-# app.py (Versión Final Definitiva - Tipos de datos corregidos)
+# app.py (Versión de Producción Final con Herramientas Completas)
 import os
 import google.generativeai as genai
 from flask import Flask, request, jsonify
@@ -6,10 +6,11 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 app = Flask(__name__)
 
-# --- Definición de la herramienta que la IA puede usar ---
+# --- DEFINICIÓN DE LAS HERRAMIENTAS QUE LA IA PUEDE USAR ---
+
 add_medication_tool = {
     "name": "add_medication",
-    "description": "Añade un nuevo medicamento a la lista de tratamientos del usuario.",
+    "description": "Añade un nuevo medicamento a la lista de tratamientos del usuario. Extrae todos los detalles de la frase del usuario.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -22,6 +23,31 @@ add_medication_tool = {
     },
 }
 
+delete_medication_tool = {
+    "name": "delete_medication",
+    "description": "Elimina un medicamento de la lista activa del usuario. Útil para comandos como 'quita el paracetamol' o 'borra la aspirina'.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "nombre": {"type": "STRING", "description": "El nombre del medicamento que se debe eliminar."},
+        },
+        "required": ["nombre"],
+    },
+}
+
+query_medication_tool = {
+    "name": "query_medication_info",
+    "description": "Consulta información sobre un medicamento específico. Útil para preguntas como 'cuánto paracetamol queda' o 'cuándo empecé a tomar la aspirina'.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "nombre": {"type": "STRING", "description": "El nombre del medicamento sobre el que se pregunta."},
+        },
+        "required": ["nombre"],
+    },
+}
+
+
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
     try:
@@ -31,9 +57,10 @@ def chat_proxy():
         
         genai.configure(api_key=api_key)
         
+        # Le decimos al modelo que tiene un conjunto de herramientas disponibles
         model = genai.GenerativeModel(
             model_name='gemini-1.5-pro-latest',
-            tools=[add_medication_tool]
+            tools=[add_medication_tool, delete_medication_tool, query_medication_tool]
         )
         
         data = request.get_json()
@@ -62,25 +89,24 @@ def chat_proxy():
             }
         )
 
+        # Comprobamos si la IA decidió usar una herramienta
         if response.candidates[0].content.parts[0].function_call:
             function_call = response.candidates[0].content.parts[0].function_call
-            if function_call.name == "add_medication":
-                args = {key: value for key, value in function_call.args.items()}
-                
-                # --- CORRECCIÓN DE TIPO DE DATOS: Aseguramos que sean enteros ---
-                try:
-                    if 'frecuencia_horas' in args:
-                        args['frecuencia_horas'] = int(float(args['frecuencia_horas']))
-                    if 'duracion_dias' in args:
-                        args['duracion_dias'] = int(float(args['duracion_dias']))
-                except (ValueError, TypeError):
-                    return jsonify({'text': "He entendido que quieres añadir un medicamento, pero los valores de frecuencia o duración no son números válidos. ¿Podrías repetirlo?"})
+            args = {key: value for key, value in function_call.args.items()}
+            
+            # Forzar conversión a entero de los campos numéricos
+            if 'frecuencia_horas' in args:
+                args['frecuencia_horas'] = int(float(args['frecuencia_horas']))
+            if 'duracion_dias' in args:
+                args['duracion_dias'] = int(float(args['duracion_dias']))
 
-                return jsonify({
-                    "action": "add_medication",
-                    "params": args
-                })
+            # Devolvemos la orden a la app Kivy
+            return jsonify({
+                "action": function_call.name,
+                "params": args
+            })
         
+        # Si no usó una herramienta, devolvemos la respuesta de texto normal
         return jsonify({'text': response.text})
 
     except Exception as e:
@@ -89,4 +115,4 @@ def chat_proxy():
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Servidor del Asistente de Salud PRO (Gemini Edition v3 - Tools & Type Fix) funcionando.", 200
+    return "Servidor del Asistente de Salud PRO (v4 - Herramientas Completas) funcionando.", 200
