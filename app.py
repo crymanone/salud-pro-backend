@@ -1,4 +1,4 @@
-# app.py (Versión de Producción Final con Herramientas Completas)
+# app.py (Versión de Producción Final - Asistente Conversacional Completo)
 import os
 import google.generativeai as genai
 from flask import Flask, request, jsonify
@@ -7,7 +7,6 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 app = Flask(__name__)
 
 # --- DEFINICIÓN DE LAS HERRAMIENTAS QUE LA IA PUEDE USAR ---
-
 add_medication_tool = {
     "name": "add_medication",
     "description": "Añade un nuevo medicamento a la lista de tratamientos del usuario. Extrae todos los detalles de la frase del usuario.",
@@ -47,6 +46,19 @@ query_medication_tool = {
     },
 }
 
+# --- MEJORA: Instrucciones del sistema (personalidad de la IA) ---
+SYSTEM_INSTRUCTIONS = """
+Eres 'Asistente de Salud', una IA conversacional dentro de la aplicación 'Gestor de Salud PRO'. 
+Tu propósito principal es ser un asistente amigable y útil para el usuario. Tienes dos modos de operar:
+
+1.  **Modo Asistente de Medicamentos:** Si el usuario te pide añadir, eliminar o consultar un medicamento, tu prioridad es usar las herramientas disponibles (`add_medication`, `delete_medication`, `query_medication_info`) para cumplir su petición. Si te falta información para usar una herramienta (por ejemplo, falta la dosis), pídela de forma clara y concisa.
+
+2.  **Modo Conversacional:** Si la petición del usuario no está relacionada con la gestión de medicamentos, puedes tener una conversación normal y amigable sobre cualquier tema de interés general (historia, ciencia, noticias, contar un chiste, etc.).
+
+**REGLA DE ORO INQUEBRANTABLE:** Bajo ninguna circunstancia puedes dar consejos médicos, diagnósticos o recomendaciones sobre salud. Si un usuario te pregunta si debe tomar un medicamento, qué hacer si se encuentra mal, o cualquier cosa similar, debes negarte educadamente y responder siempre con una variación de: 'No soy un profesional médico y no puedo dar consejos de salud. Por favor, consulta siempre a tu médico o farmacéutico para ese tipo de preguntas'.
+
+Sé siempre amable, servicial y directo en tus respuestas.
+"""
 
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
@@ -57,16 +69,18 @@ def chat_proxy():
         
         genai.configure(api_key=api_key)
         
-        # Le decimos al modelo que tiene un conjunto de herramientas disponibles
+        # Le decimos al modelo que tiene un conjunto de herramientas y unas instrucciones de sistema
         model = genai.GenerativeModel(
             model_name='gemini-1.5-pro-latest',
-            tools=[add_medication_tool, delete_medication_tool, query_medication_tool]
+            tools=[add_medication_tool, delete_medication_tool, query_medication_tool],
+            system_instruction=SYSTEM_INSTRUCTIONS
         )
         
         data = request.get_json()
         if not data or 'messages' not in data:
             return jsonify({'error': 'Petición inválida.'}), 400
 
+        # El historial de la app Kivy ya es compatible
         gemini_history = []
         for msg in data['messages']:
             if msg.get('role') in ['user', 'model']:
@@ -74,21 +88,13 @@ def chat_proxy():
                     'role': msg['role'],
                     'parts': [{'text': msg.get('content', '')}]
                 })
-        
+
         if not gemini_history:
              return jsonify({'text': "Hola, ¿en qué puedo ayudarte hoy?"})
 
-        chat = model.start_chat(history=gemini_history)
-        response = chat.send_message(
-            gemini_history[-1]['parts'],
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-        )
-
+        # La llamada a generate_content es más simple ahora
+        response = model.generate_content(gemini_history)
+        
         # Comprobamos si la IA decidió usar una herramienta
         if response.candidates[0].content.parts[0].function_call:
             function_call = response.candidates[0].content.parts[0].function_call
@@ -96,17 +102,12 @@ def chat_proxy():
             
             # Forzar conversión a entero de los campos numéricos
             if 'frecuencia_horas' in args:
-                args['frecuencia_horas'] = int(float(args['frecuencia_horas']))
+                args['frecuencia_horas'] = int(float(args.get('frecuencia_horas', 0)))
             if 'duracion_dias' in args:
-                args['duracion_dias'] = int(float(args['duracion_dias']))
+                args['duracion_dias'] = int(float(args.get('duracion_dias', 0)))
 
-            # Devolvemos la orden a la app Kivy
-            return jsonify({
-                "action": function_call.name,
-                "params": args
-            })
+            return jsonify({"action": function_call.name, "params": args})
         
-        # Si no usó una herramienta, devolvemos la respuesta de texto normal
         return jsonify({'text': response.text})
 
     except Exception as e:
@@ -115,4 +116,4 @@ def chat_proxy():
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Servidor del Asistente de Salud PRO (v4 - Herramientas Completas) funcionando.", 200
+    return "Servidor del Asistente de Salud PRO (v5 - Conversacional y Herramientas) funcionando.", 200
