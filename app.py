@@ -1,220 +1,86 @@
-# app.py (Versión de Producción Final - Asistente con Herramientas Completas y Conversacional)
+# app.py (Versión final, robusta y con TODAS las importaciones)
+
 import os
+import json
+import re
+# --- IMPORTACIONES AÑADIDAS PARA EL PARSEO ---
+from datetime import datetime, timedelta
+import calendar
+# ---------------------------------------------
 import google.generativeai as genai
 from flask import Flask, request, jsonify
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 app = Flask(__name__)
 
+# --- PARSER DE FECHAS (MOVIMOS LA INTELIGENCIA AL BACKEND) ---
+MESES = {
+    'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+    'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11,
+    'diciembre': 12
+}
+DIAS_SEMANA = {
+    'lunes': 0, 'martes': 1, 'miércoles': 2, 'jueves': 3, 'viernes': 4,
+    'sábado': 5, 'domingo': 6
+}
 
 def parsear_fecha_hora(texto: str) -> datetime or None:
     texto_norm = texto.lower()
     now = datetime.now()
-    
-    # Bandera para saber si se mencionó explícitamente un día
-    dia_explicito = False
-    
-    # --- 1. PRIMERO EXTRAER LA FECHA ---
+    hora, minuto = None, 0
+    match_hora = re.search(r'(\d{1,2})\s*[:y]\s*(\d{2})', texto_norm)
+    if match_hora:
+        hora, minuto = int(match_hora.group(1)), int(match_hora.group(2))
+    else:
+        match_hora_simple = re.search(r'(a la|a las|las)\s+(\d{1,2})', texto_norm)
+        if match_hora_simple:
+            hora = int(match_hora_simple.group(2))
+        if 'y media' in texto_norm: minuto = 30
+    if hora is None: return None
+    if any(s in texto_norm for s in ['tarde', 'noche', 'pm']) and hora < 12: hora += 12
     fecha_base = None
-    
-    # Días relativos explícitos (estos son muy claros)
-    if 'hoy' in texto_norm:
-        fecha_base = now.date()
-        dia_explicito = True
-    elif 'mañana' in texto_norm:
-        fecha_base = (now + timedelta(days=1)).date()
-        dia_explicito = True
-    elif 'pasado mañana' in texto_norm:
-        fecha_base = (now + timedelta(days=2)).date()
-        dia_explicito = True
-    
-    # Días de la semana
-    dia_semana_encontrado = None
-    for dia_str, dia_num in DIAS_SEMANA.items():
-        if dia_str in texto_norm:
-            dia_semana_encontrado = dia_num
-            dia_explicito = True
-            break
-    
-    if dia_semana_encontrado is not None:
-        dias_a_sumar = (dia_semana_encontrado - now.weekday() + 7) % 7
-        
-        # Si es "próximo [día]", asegurar que sea de la próxima semana
-        if 'próximo' in texto_norm or 'proximo' in texto_norm:
-            if dias_a_sumar == 0:  # Si es hoy, sumar 7 días
-                dias_a_sumar = 7
-        elif dias_a_sumar == 0:  # Si es hoy y no se especifica "próximo"
-            # Usar hoy
-            dias_a_sumar = 0
-        
-        fecha_base = (now + timedelta(days=dias_a_sumar)).date()
-    
-    # Fecha específica (día y mes) - "15 de diciembre"
-    match_fecha = re.search(r'(\d{1,2})\s+de\s+([a-zA-Záéíóúñ]+)', texto_norm)
-    if match_fecha:
-        dia_str, mes_str = match_fecha.groups()
-        mes_str = mes_str.lower().strip()
-        
+    match_fecha_esp = re.search(r'(\d{1,2})\s+de\s+([a-zA-Záéíóúñ]+)', texto_norm)
+    if match_fecha_esp:
+        dia_str, mes_str = match_fecha_esp.groups()
         if mes_str in MESES:
             anio = now.year
             mes = MESES[mes_str]
             dia = int(dia_str)
-            
             try:
                 fecha_candidata = datetime(anio, mes, dia).date()
-                # Si la fecha ya pasó este año, usar próximo año
-                if fecha_candidata < now.date():
-                    anio += 1
+                if fecha_candidata < now.date(): anio += 1
                 fecha_base = datetime(anio, mes, dia).date()
-                dia_explicito = True
-            except ValueError:
-                pass
-
-    # Si no se encontró fecha explícita, usar hoy
-    if fecha_base is None:
-        fecha_base = now.date()
-    
-    # --- 2. LUEGO EXTRAER LA HORA ---
-    hora, minuto = None, 0
-    
-    # PRIMERO buscar minutos especiales (antes que la hora normal)
-    if 'y media' in texto_norm: 
-        minuto = 30
-    elif 'y cuarto' in texto_norm or 'y quart' in texto_norm: 
-        minuto = 15
-    elif 'menos cuarto' in texto_norm or 'menos quart' in texto_norm:
-        minuto = 45
-    
-    # AHORA buscar la hora
-    patrones_hora = [
-        r'(\d{1,2})\s*[:\.]\s*(\d{2})',  # 14:30, 14.30
-        r'a las (\d{1,2})',              # a las 3
-        r'las (\d{1,2})',                # las 3
-        r'a la (\d{1,2})',               # a la 1
-        r'(\d{1,2})\s+(de la|de)',       # 3 de la tarde
-        r'(\d{1,2})\s*$',                # solo el número al final
-        r'(\d{1,2})\s+(en punto|exactas|punto)',  # 3 en punto
-    ]
-    
-    for patron in patrones_hora:
-        match = re.search(patron, texto_norm)
-        if match:
-            hora = int(match.group(1))
-            # Si el patrón incluye minutos (como 14:30), sobreescribir los minutos
-            if len(match.groups()) >= 2 and match.group(2).isdigit():
-                minuto = int(match.group(2))
-            break
-    
-    # Si no encontramos hora pero sí minutos, buscar hora por separado
-    if hora is None and minuto > 0:
-        # Buscar cualquier número que podría ser la hora
-        match_hora = re.search(r'(\d{1,2})', texto_norm)
-        if match_hora:
-            hora = int(match_hora.group(1))
-    
-    # Ajustar formato 12h a 24h
-    if hora is not None:
-        if any(s in texto_norm for s in ['tarde', 'noche', 'pm', 'p.m.']) and hora < 12: 
-            hora += 12
-        if any(s in texto_norm for s in ['de la mañana', 'am', 'a.m.']) and hora == 12: 
-            hora = 0
-        if any(s in texto_norm for s in ['de la mañana', 'am', 'a.m.']) and hora > 12:
-            # Si dice "13 de la mañana", corregir a 1 PM
-            hora = hora % 12
-        # Asegurar rango válido
-        hora = hora % 24
-        
-        # Manejar "menos cuarto" (restar 1 hora y poner 45 minutos)
-        if 'menos cuarto' in texto_norm or 'menos quart' in texto_norm:
-            hora -= 1
-            if hora < 0:
-                hora = 23
-    else:
-        # Si no se especifica hora, usar 9 AM por defecto
-        hora = 9
-        minuto = 0
-
-    # --- 3. COMBINAR FECHA Y HORA ---
+            except ValueError: return None
+    if not fecha_base:
+        if 'hoy' in texto_norm: fecha_base = now.date()
+        elif 'mañana' in texto_norm: fecha_base = (now + timedelta(days=1)).date()
+    if not fecha_base: return None
     try:
-        fecha_final = datetime(fecha_base.year, fecha_base.month, fecha_base.day, hora, minuto)
-        
-        # Lógica de ajuste
-        if (fecha_final < now and 
-            not dia_explicito and 
-            dia_semana_encontrado is None and
-            not any(palabra in texto_norm for palabra in ['hoy', 'mañana', 'pasado mañana'])):
-            
-            diferencia = now - fecha_final
-            dias_a_agregar = (diferencia.days + 1)
-            fecha_final += timedelta(days=dias_a_agregar)
-        
-        return fecha_final
-        
+        return datetime(fecha_base.year, fecha_base.month, fecha_base.day, hora, minuto)
     except ValueError:
         return None
+        
+def format_datetime_espanol(dt_obj: datetime) -> str:
+    dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+    meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
+    return f"el {dias[dt_obj.weekday()]} {dt_obj.day} de {meses[dt_obj.month - 1]} a las {dt_obj.strftime('%H:%M')}"
 
-# --- DEFINICIÓN DE LAS HERRAMIENTAS AMPLIADAS ---
-
-add_medication_tool = {
-    "name": "add_medication",
-    "description": "Añade un nuevo medicamento a la lista de tratamientos del usuario. Extrae todos los detalles de la frase del usuario, incluyendo opcionalmente la cantidad total y la fecha de caducidad.",
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "nombre": {"type": "STRING", "description": "El nombre del medicamento. Por ejemplo: Ibuprofeno"},
-            "dosis": {"type": "STRING", "description": "La dosis a tomar. Por ejemplo: 1 pastilla, 10 ml"},
-            "frecuencia_horas": {"type": "INTEGER", "description": "El intervalo en horas entre cada toma. Por ejemplo: 8"},
-            "duracion_dias": {"type": "INTEGER", "description": "El número total de días que dura el tratamiento. Por ejemplo: 7"},
-            "cantidad_total": {"type": "INTEGER", "description": "Opcional. El número total de unidades en la caja."},
-            "fecha_caducidad": {"type": "STRING", "description": "Opcional. La fecha de caducidad en formato AAAA-MM-DD."},
-        },
-        "required": ["nombre", "dosis", "frecuencia_horas", "duracion_dias"],
-    },
-}
-
-update_contact_info_tool = {
-    "name": "update_contact_info",
-    "description": "Actualiza la información de contacto de emergencia del usuario, como el nombre del médico o el teléfono del centro de salud.",
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "nombre_medico": {"type": "STRING", "description": "Opcional. El nombre del médico a guardar."},
-            "telefono_centro_salud": {"type": "STRING", "description": "Opcional. El número de teléfono del centro de salud."},
-        },
-    },
-}
-
-permanently_delete_medication_tool = {
-    "name": "permanently_delete_medication",
-    "description": "Elimina un medicamento para siempre de la papelera. Solo se debe usar si el usuario pide explícitamente borrarlo 'permanentemente' o 'para siempre'.",
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "nombre": {"type": "STRING", "description": "El nombre del medicamento a eliminar de la papelera."},
-        },
-        "required": ["nombre"],
-    },
-}
+# --- DEFINICIÓN DE LAS HERRAMIENTAS ---
+add_medication_tool = { "name": "add_medication", "description": "Añade un nuevo medicamento.", "parameters": { "type": "OBJECT", "properties": { "nombre": {"type": "STRING"}, "dosis": {"type": "STRING"}, "frecuencia_horas": {"type": "INTEGER"}, "duracion_dias": {"type": "INTEGER"}}, "required": ["nombre", "dosis", "frecuencia_horas", "duracion_dias"]}}
+update_contact_info_tool = { "name": "update_contact_info", "description": "Actualiza la información de contacto.", "parameters": { "type": "OBJECT", "properties": { "nombre_medico": {"type": "STRING"}, "telefono_centro_salud": {"type": "STRING"}}}}
+permanently_delete_medication_tool = { "name": "permanently_delete_medication", "description": "Elimina un medicamento para siempre.", "parameters": { "type": "OBJECT", "properties": { "nombre": {"type": "STRING"}}, "required": ["nombre"]}}
+query_medication_tool = { "name": "query_medication_info", "description": "Consulta información sobre un medicamento.", "parameters": { "type": "OBJECT", "properties": {"nombre": {"type": "STRING"}}, "required": ["nombre"]}}
 
 
-query_medication_tool = {
-    "name": "query_medication_info",
-    "description": "Consulta información sobre un medicamento específico que el usuario tiene en su lista activa.",
-    "parameters": {
-        "type": "OBJECT", "properties": {"nombre": {"type": "STRING"}}, "required": ["nombre"],
-    },
-}
-
-# --- Instrucciones del Sistema (Personalidad Final de la IA) ---
+# --- SYSTEM PROMPT ---
 SYSTEM_INSTRUCTIONS = """
 Eres 'Asistente de Salud', una IA conversacional empática y segura.
 
 Tus modos de operar son:
-1.  **Modo de Herramientas:** Si el usuario pide añadir un medicamento, contacto, etc., usa las herramientas formales.
+1.  **Modo de Herramientas:** Si el usuario pide una acción concreta (añadir medicamento, contacto, etc.), usa las herramientas formales. Si te falta información, pídela.
 
-2.  **Modo de Agendar Citas (¡NUEVA REGLA!):** Cuando el usuario está agendando una cita y te da una fecha y hora en lenguaje natural (ej: "el 3 de septiembre a las 9 y media"), tu ÚNICA RESPUESTA debe ser llamar a la función `schedule_appointment`. Esta función NO es una herramienta formal de la API, sino una directiva para el backend. Tu respuesta JSON debe ser: `{"action": "schedule_appointment", "params": {"fecha_texto": "el texto que dijo el usuario"}}`. NO intentes confirmar la fecha tú mismo, solo pasa el texto.
+2.  **Modo de Agendar Citas:** Cuando el usuario está agendando una cita y te da una fecha y hora en lenguaje natural (ej: "el 3 de septiembre a las 9 y media"), tu ÚNICA RESPUESTA debe ser un JSON con el formato: `{"action": "schedule_appointment", "params": {"fecha_texto": "el texto original que dijo el usuario"}}`. NO confirmes la fecha, solo pasa el texto.
 
-3.  **Modo de Consejo de Bienestar:** Para síntomas leves, da consejos generales (descansar, hidratarse) y siempre termina recomendando consultar a un médico si los síntomas persisten.
+3.  **Modo de Consejo de Bienestar:** Para síntomas leves, da consejos seguros (descansar, hidratarse) y SIEMPRE termina recomendando consultar a un médico si los síntomas persisten.
 
 4.  **Modo de Derivación (REGLA DE ORO):** Para CUALQUIER otra pregunta de salud (síntomas graves, medicamentos, diagnósticos), niégate educadamente y recomienda SIEMPRE consultar a un médico o farmacéutico.
 """
@@ -228,10 +94,9 @@ def chat_proxy():
         genai.configure(api_key=api_key)
         
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash-latest',
+            model_name='gemini-2.0-flash',
             tools=[add_medication_tool, update_contact_info_tool, permanently_delete_medication_tool, query_medication_tool],
-            system_instruction=SYSTEM_INSTRUCTIONS,
-            response_mime_type="application/json" # Forzamos la salida a JSON
+            system_instruction=SYSTEM_INSTRUCTIONS
         )
         
         data = request.get_json()
@@ -242,35 +107,35 @@ def chat_proxy():
 
         response = model.generate_content(gemini_history)
         
-        # Analizamos la respuesta de Gemini
+        # --- LÓGICA DE RESPUESTA SIMPLIFICADA Y ROBUSTA ---
+        
+        # 1. Comprobar si es una llamada a una HERRAMIENTA FORMAL
+        if response.candidates and response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
+            function_call = response.candidates[0].content.parts[0].function_call
+            args = {key: value for key, value in function_call.args.items()}
+            return jsonify({"action": function_call.name, "params": args})
+
+        # 2. Si no, obtener el texto y comprobar si es nuestra ACCIÓN PERSONALIZADA de agendar
+        response_text = response.text
         try:
-            # El modelo ahora debería devolver JSON directamente
-            response_json = json.loads(response.text)
-            
-            # --- NUEVA LÓGICA PARA MANEJAR LA ACCIÓN DE AGENDAR ---
+            response_json = json.loads(response_text)
             if response_json.get("action") == "schedule_appointment":
-                fecha_texto = response_json["params"]["fecha_texto"]
-                parsed_datetime = parsear_fecha_hora(fecha_texto) # Usamos el parser aquí, en el backend
+                fecha_texto = response_json.get("params", {}).get("fecha_texto", "")
+                parsed_datetime = parsear_fecha_hora(fecha_texto)
                 
                 if parsed_datetime:
-                    # Creamos una respuesta estructurada para la app
                     return jsonify({
                         "action": "confirm_appointment",
                         "params": {
                             "parsed_datetime": parsed_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-                            "confirmation_string": f"Entendido, he anotado la fecha y hora: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?"
+                            "confirmation_string": f"Entendido, he anotado la fecha: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?"
                         }
                     })
                 else:
-                    # Si nuestro parser robusto falla, pedimos al usuario que lo intente de nuevo
-                    return jsonify({"text": "No he podido entender esa fecha y hora. ¿Podrías decírmelo de otra forma, por ejemplo, 'mañana a las 5 de la tarde'?"})
-
-            return jsonify(response_json) # Devolvemos el JSON tal cual para otras acciones
-
-        except (json.JSONDecodeError, KeyError):
-             # Si la respuesta no es un JSON válido o no tiene la estructura esperada,
-             # la tratamos como texto normal.
-             return jsonify({'text': response.text})
+                    return jsonify({"text": "No he podido entender esa fecha y hora. Por favor, dímela de nuevo."})
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            # 3. Si no es ninguna de las anteriores, es TEXTO NORMAL
+            return jsonify({'text': response_text})
 
     except Exception as e:
         print(f"ERROR DETALLADO EN EL SERVIDOR: {e}") 
@@ -278,4 +143,4 @@ def chat_proxy():
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Servidor del Asistente de Salud PRO (v-final - Herramientas Completas) funcionando.", 200
+    return "Servidor del Asistente de Salud PRO funcionando.", 200
