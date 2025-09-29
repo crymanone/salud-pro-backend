@@ -6,6 +6,153 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 app = Flask(__name__)
 
+
+def parsear_fecha_hora(texto: str) -> datetime or None:
+    texto_norm = texto.lower()
+    now = datetime.now()
+    
+    # Bandera para saber si se mencionó explícitamente un día
+    dia_explicito = False
+    
+    # --- 1. PRIMERO EXTRAER LA FECHA ---
+    fecha_base = None
+    
+    # Días relativos explícitos (estos son muy claros)
+    if 'hoy' in texto_norm:
+        fecha_base = now.date()
+        dia_explicito = True
+    elif 'mañana' in texto_norm:
+        fecha_base = (now + timedelta(days=1)).date()
+        dia_explicito = True
+    elif 'pasado mañana' in texto_norm:
+        fecha_base = (now + timedelta(days=2)).date()
+        dia_explicito = True
+    
+    # Días de la semana
+    dia_semana_encontrado = None
+    for dia_str, dia_num in DIAS_SEMANA.items():
+        if dia_str in texto_norm:
+            dia_semana_encontrado = dia_num
+            dia_explicito = True
+            break
+    
+    if dia_semana_encontrado is not None:
+        dias_a_sumar = (dia_semana_encontrado - now.weekday() + 7) % 7
+        
+        # Si es "próximo [día]", asegurar que sea de la próxima semana
+        if 'próximo' in texto_norm or 'proximo' in texto_norm:
+            if dias_a_sumar == 0:  # Si es hoy, sumar 7 días
+                dias_a_sumar = 7
+        elif dias_a_sumar == 0:  # Si es hoy y no se especifica "próximo"
+            # Usar hoy
+            dias_a_sumar = 0
+        
+        fecha_base = (now + timedelta(days=dias_a_sumar)).date()
+    
+    # Fecha específica (día y mes) - "15 de diciembre"
+    match_fecha = re.search(r'(\d{1,2})\s+de\s+([a-zA-Záéíóúñ]+)', texto_norm)
+    if match_fecha:
+        dia_str, mes_str = match_fecha.groups()
+        mes_str = mes_str.lower().strip()
+        
+        if mes_str in MESES:
+            anio = now.year
+            mes = MESES[mes_str]
+            dia = int(dia_str)
+            
+            try:
+                fecha_candidata = datetime(anio, mes, dia).date()
+                # Si la fecha ya pasó este año, usar próximo año
+                if fecha_candidata < now.date():
+                    anio += 1
+                fecha_base = datetime(anio, mes, dia).date()
+                dia_explicito = True
+            except ValueError:
+                pass
+
+    # Si no se encontró fecha explícita, usar hoy
+    if fecha_base is None:
+        fecha_base = now.date()
+    
+    # --- 2. LUEGO EXTRAER LA HORA ---
+    hora, minuto = None, 0
+    
+    # PRIMERO buscar minutos especiales (antes que la hora normal)
+    if 'y media' in texto_norm: 
+        minuto = 30
+    elif 'y cuarto' in texto_norm or 'y quart' in texto_norm: 
+        minuto = 15
+    elif 'menos cuarto' in texto_norm or 'menos quart' in texto_norm:
+        minuto = 45
+    
+    # AHORA buscar la hora
+    patrones_hora = [
+        r'(\d{1,2})\s*[:\.]\s*(\d{2})',  # 14:30, 14.30
+        r'a las (\d{1,2})',              # a las 3
+        r'las (\d{1,2})',                # las 3
+        r'a la (\d{1,2})',               # a la 1
+        r'(\d{1,2})\s+(de la|de)',       # 3 de la tarde
+        r'(\d{1,2})\s*$',                # solo el número al final
+        r'(\d{1,2})\s+(en punto|exactas|punto)',  # 3 en punto
+    ]
+    
+    for patron in patrones_hora:
+        match = re.search(patron, texto_norm)
+        if match:
+            hora = int(match.group(1))
+            # Si el patrón incluye minutos (como 14:30), sobreescribir los minutos
+            if len(match.groups()) >= 2 and match.group(2).isdigit():
+                minuto = int(match.group(2))
+            break
+    
+    # Si no encontramos hora pero sí minutos, buscar hora por separado
+    if hora is None and minuto > 0:
+        # Buscar cualquier número que podría ser la hora
+        match_hora = re.search(r'(\d{1,2})', texto_norm)
+        if match_hora:
+            hora = int(match_hora.group(1))
+    
+    # Ajustar formato 12h a 24h
+    if hora is not None:
+        if any(s in texto_norm for s in ['tarde', 'noche', 'pm', 'p.m.']) and hora < 12: 
+            hora += 12
+        if any(s in texto_norm for s in ['de la mañana', 'am', 'a.m.']) and hora == 12: 
+            hora = 0
+        if any(s in texto_norm for s in ['de la mañana', 'am', 'a.m.']) and hora > 12:
+            # Si dice "13 de la mañana", corregir a 1 PM
+            hora = hora % 12
+        # Asegurar rango válido
+        hora = hora % 24
+        
+        # Manejar "menos cuarto" (restar 1 hora y poner 45 minutos)
+        if 'menos cuarto' in texto_norm or 'menos quart' in texto_norm:
+            hora -= 1
+            if hora < 0:
+                hora = 23
+    else:
+        # Si no se especifica hora, usar 9 AM por defecto
+        hora = 9
+        minuto = 0
+
+    # --- 3. COMBINAR FECHA Y HORA ---
+    try:
+        fecha_final = datetime(fecha_base.year, fecha_base.month, fecha_base.day, hora, minuto)
+        
+        # Lógica de ajuste
+        if (fecha_final < now and 
+            not dia_explicito and 
+            dia_semana_encontrado is None and
+            not any(palabra in texto_norm for palabra in ['hoy', 'mañana', 'pasado mañana'])):
+            
+            diferencia = now - fecha_final
+            dias_a_agregar = (diferencia.days + 1)
+            fecha_final += timedelta(days=dias_a_agregar)
+        
+        return fecha_final
+        
+    except ValueError:
+        return None
+
 # --- DEFINICIÓN DE LAS HERRAMIENTAS AMPLIADAS ---
 
 add_medication_tool = {
@@ -60,28 +207,16 @@ query_medication_tool = {
 
 # --- Instrucciones del Sistema (Personalidad Final de la IA) ---
 SYSTEM_INSTRUCTIONS = """
-Eres 'Asistente de Salud', una IA conversacional dentro de la aplicación 'Gestor de Salud PRO'.
-Tu personalidad es empática, solidaria y, sobre todo, segura y responsable.
+Eres 'Asistente de Salud', una IA conversacional empática y segura.
 
-Operas bajo tres modos principales:
+Tus modos de operar son:
+1.  **Modo de Herramientas:** Si el usuario pide añadir un medicamento, contacto, etc., usa las herramientas formales.
 
-1.  **Modo de Herramientas:** Si la petición del usuario encaja directamente con una de tus herramientas (`add_medication`, `update_contact_info`, etc.), tu prioridad absoluta es usar esa herramienta. Si te falta información para completarla (ej. falta la dosis), pídela de forma clara, amigable y concisa antes de volver a llamar a la herramienta.
+2.  **Modo de Agendar Citas (¡NUEVA REGLA!):** Cuando el usuario está agendando una cita y te da una fecha y hora en lenguaje natural (ej: "el 3 de septiembre a las 9 y media"), tu ÚNICA RESPUESTA debe ser llamar a la función `schedule_appointment`. Esta función NO es una herramienta formal de la API, sino una directiva para el backend. Tu respuesta JSON debe ser: `{"action": "schedule_appointment", "params": {"fecha_texto": "el texto que dijo el usuario"}}`. NO intentes confirmar la fecha tú mismo, solo pasa el texto.
 
-2.  **Modo de Consejo de Bienestar (SOLO para síntomas LEVES):**
-    - Si un usuario describe síntomas que son claramente leves y no urgentes (ej: "me duele un poco la cabeza", "estoy resfriado", "tengo agujetas", "me siento cansado"), puedes ofrecer consejos generales de bienestar.
-    - **Consejos seguros permitidos:** descansar, mantenerse hidratado bebiendo agua, comer algo ligero, aplicar una compresa fría o caliente, meditar o realizar estiramientos suaves.
-    - **Prohibición sobre medicamentos:** NUNCA recomiendes un medicamento específico, ni siquiera de venta libre.
-    - **Derivación obligatoria al final:** SIEMPRE debes terminar tu consejo de bienestar con una frase como: "Recuerda que esto es solo un consejo general. Si los síntomas continúan, empeoran o te preocupan, lo más importante es que consultes con tu médico."
+3.  **Modo de Consejo de Bienestar:** Para síntomas leves, da consejos generales (descansar, hidratarse) y siempre termina recomendando consultar a un médico si los síntomas persisten.
 
-3.  **Modo de Derivación (REGLA DE ORO):** Este es tu modo más importante.
-    - **Si la pregunta del usuario es sobre salud pero NO encaja en el Modo de Consejo de Bienestar, debes derivar.** Esto incluye:
-        - Síntomas que podrían ser graves (dolor en el pecho, dificultad para respirar, fiebre alta, mareos fuertes, confusión, dolor abdominal intenso, etc.).
-        - Preguntas sobre condiciones médicas específicas (ej: "qué puedo hacer para la diabetes").
-        - Preguntas sobre dosis, interacciones o efectos secundarios de medicamentos.
-        - Si el usuario pide un diagnóstico.
-    - **Tu respuesta en este modo es siempre una variación educada y empática de:** "Entiendo tu preocupación. Como asistente virtual, no estoy cualificado para dar consejos sobre temas médicos tan específicos. La seguridad es lo primero, por lo que te recomiendo encarecidamente que consultes a un médico o farmacéutico para obtener una respuesta profesional."
-
-4.  **Modo Conversacional:** Si la pregunta no tiene que ver con la salud ni con las herramientas, puedes charlar de forma amigable sobre cualquier otro tema.
+4.  **Modo de Derivación (REGLA DE ORO):** Para CUALQUIER otra pregunta de salud (síntomas graves, medicamentos, diagnósticos), niégate educadamente y recomienda SIEMPRE consultar a un médico o farmacéutico.
 """
 
 @app.route('/chat', methods=['POST'])
@@ -93,9 +228,10 @@ def chat_proxy():
         genai.configure(api_key=api_key)
         
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-pro-latest',
+            model_name='gemini-1.5-flash-latest',
             tools=[add_medication_tool, update_contact_info_tool, permanently_delete_medication_tool, query_medication_tool],
-            system_instruction=SYSTEM_INSTRUCTIONS
+            system_instruction=SYSTEM_INSTRUCTIONS,
+            response_mime_type="application/json" # Forzamos la salida a JSON
         )
         
         data = request.get_json()
@@ -106,19 +242,35 @@ def chat_proxy():
 
         response = model.generate_content(gemini_history)
         
-        if response.candidates and response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
-            function_call = response.candidates[0].content.parts[0].function_call
-            args = {key: value for key, value in function_call.args.items()}
+        # Analizamos la respuesta de Gemini
+        try:
+            # El modelo ahora debería devolver JSON directamente
+            response_json = json.loads(response.text)
             
-            # Limpieza y conversión de tipos
-            for key in ['frecuencia_horas', 'duracion_dias', 'cantidad_total']:
-                if key in args:
-                    try: args[key] = int(float(args[key]))
-                    except (ValueError, TypeError): pass
-            
-            return jsonify({"action": function_call.name, "params": args})
-        
-        return jsonify({'text': response.text})
+            # --- NUEVA LÓGICA PARA MANEJAR LA ACCIÓN DE AGENDAR ---
+            if response_json.get("action") == "schedule_appointment":
+                fecha_texto = response_json["params"]["fecha_texto"]
+                parsed_datetime = parsear_fecha_hora(fecha_texto) # Usamos el parser aquí, en el backend
+                
+                if parsed_datetime:
+                    # Creamos una respuesta estructurada para la app
+                    return jsonify({
+                        "action": "confirm_appointment",
+                        "params": {
+                            "parsed_datetime": parsed_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+                            "confirmation_string": f"Entendido, he anotado la fecha y hora: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?"
+                        }
+                    })
+                else:
+                    # Si nuestro parser robusto falla, pedimos al usuario que lo intente de nuevo
+                    return jsonify({"text": "No he podido entender esa fecha y hora. ¿Podrías decírmelo de otra forma, por ejemplo, 'mañana a las 5 de la tarde'?"})
+
+            return jsonify(response_json) # Devolvemos el JSON tal cual para otras acciones
+
+        except (json.JSONDecodeError, KeyError):
+             # Si la respuesta no es un JSON válido o no tiene la estructura esperada,
+             # la tratamos como texto normal.
+             return jsonify({'text': response.text})
 
     except Exception as e:
         print(f"ERROR DETALLADO EN EL SERVIDOR: {e}") 
