@@ -1,4 +1,4 @@
-# app.py (Versión final, robusta y con "desenvoltorio" de JSON)
+# app.py (Versión final, robusta y con ajustes de seguridad)
 
 import os
 import json
@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta
 import calendar
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -22,6 +23,7 @@ DIAS_SEMANA = {
 }
 
 def parsear_fecha_hora(texto: str) -> datetime or None:
+    # (Esta función es correcta, la mantenemos)
     texto_norm = texto.lower()
     now = datetime.now()
     hora, minuto = None, 0
@@ -56,7 +58,7 @@ def parsear_fecha_hora(texto: str) -> datetime or None:
         return datetime(fecha_base.year, fecha_base.month, fecha_base.day, hora, minuto)
     except ValueError:
         return None
-        
+
 def format_datetime_espanol(dt_obj: datetime) -> str:
     dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
     meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -69,17 +71,20 @@ permanently_delete_medication_tool = { "name": "permanently_delete_medication", 
 query_medication_tool = { "name": "query_medication_info", "description": "Consulta información sobre un medicamento.", "parameters": { "type": "OBJECT", "properties": {"nombre": {"type": "STRING"}}, "required": ["nombre"]}}
 
 SYSTEM_INSTRUCTIONS = """
-Eres 'Asistente de Salud', una IA conversacional empática y segura.
-
-Tus modos de operar son:
-1.  **Modo de Herramientas:** Si el usuario pide una acción concreta (añadir medicamento, contacto, etc.), usa las herramientas formales. Si te falta información, pídela.
-
-2.  **Modo de Agendar Citas:** Cuando el usuario está agendando una cita y te da una fecha y hora en lenguaje natural (ej: "el 3 de septiembre a las 9 y media"), tu ÚNICA RESPUESTA debe ser un JSON con el formato: `{"action": "schedule_appointment", "params": {"fecha_texto": "el texto original que dijo el usuario"}}`. NO confirmes la fecha, solo pasa el texto.
-
-3.  **Modo de Consejo de Bienestar:** Para síntomas leves, da consejos seguros (descansar, hidratarse) y SIEMPRE termina recomendando consultar a un médico si los síntomas persisten.
-
-4.  **Modo de Derivación (REGLA DE ORO):** Para CUALQUIER otra pregunta de salud (síntomas graves, medicamentos, diagnósticos), niégate educadamente y recomienda SIEMPRE consultar a un médico o farmacéutico.
+Eres 'Asistente de Salud', una IA conversacional empática y segura. Tus modos de operar son:
+1. Modo de Herramientas: Si el usuario pide una acción concreta (añadir medicamento, contacto, etc.), usa las herramientas formales. Si te falta información, pídela.
+2. Modo de Agendar Citas: Cuando el usuario está agendando una cita y te da una fecha y hora en lenguaje natural (ej: "el 3 de septiembre a las 9 y media"), tu ÚNICA RESPUESTA debe ser un JSON con el formato: `{"action": "schedule_appointment", "params": {"fecha_texto": "el texto original que dijo el usuario"}}`. NO confirmes la fecha, solo pasa el texto.
+3. Modo de Consejo de Bienestar: Para síntomas leves, da consejos seguros (descansar, hidratarse) y SIEMPRE termina recomendando consultar a un médico si los síntomas persisten.
+4. Modo de Derivación (REGLA DE ORO): Para CUALQUIER otra pregunta de salud (síntomas graves, medicamentos, diagnósticos), niégate educadamente y recomienda SIEMPRE consultar a un médico o farmacéutico.
 """
+
+# --- AJUSTES DE SEGURIDAD PARA LA API ---
+SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+}
 
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
@@ -92,27 +97,23 @@ def chat_proxy():
         model = genai.GenerativeModel(
             model_name='gemini-2.5-flash',
             tools=[add_medication_tool, update_contact_info_tool, permanently_delete_medication_tool, query_medication_tool],
-            system_instruction=SYSTEM_INSTRUCTIONS
+            system_instruction=SYSTEM_INSTRUCTIONS,
+            safety_settings=SAFETY_SETTINGS  # <-- ¡AQUÍ ESTÁ LA LÍNEA MÁGICA!
         )
         
         data = request.get_json()
         gemini_history = [{"role": msg['role'], 'parts': [{'text': msg.get('content', '')}]} for msg in data['messages']]
         if not gemini_history: return jsonify({'text': "Hola, ¿en qué puedo ayudarte hoy?"})
 
-        response = model.generate_content(gemini_history)
+        response = model.generate_content(gemini_history, request_options={"timeout": 100})
         
-        # --- LÓGICA DE RESPUESTA FINAL Y ROBUSTA ---
-        
-        # 1. Comprobar si es una llamada a una HERRAMIENTA FORMAL
-        if response.candidates.content.parts.function_call:
-            function_call = response.candidates.content.parts.function_call
+        # --- LÓGICA DE RESPUESTA (Sin cambios, ya es robusta) ---
+        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
+            function_call = response.candidates[0].content.parts[0].function_call
             args = {key: value for key, value in function_call.args.items()}
             return jsonify({"action": function_call.name, "params": args})
 
-        # 2. Si no, obtener el texto y "desenvolverlo" para buscar nuestro JSON personalizado
         response_text = response.text
-        
-        # Usamos regex para extraer de forma segura el JSON de dentro de ```json ... ```
         match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
         if match:
             json_str = match.group(1)
@@ -121,22 +122,16 @@ def chat_proxy():
                 if response_json.get("action") == "schedule_appointment":
                     fecha_texto = response_json.get("params", {}).get("fecha_texto", "")
                     parsed_datetime = parsear_fecha_hora(fecha_texto)
-                    
                     if parsed_datetime:
                         return jsonify({
                             "action": "confirm_appointment",
-                            "params": {
-                                "parsed_datetime": parsed_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-                                "confirmation_string": f"Entendido, he anotado la fecha: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?"
-                            }
+                            "params": { "parsed_datetime": parsed_datetime.strftime("%Y-%m-%d %H:%M:%S"), "confirmation_string": f"Entendido, he anotado la fecha: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?" }
                         })
                     else:
                         return jsonify({"text": "No he podido entender esa fecha y hora. Por favor, dímela de nuevo."})
             except json.JSONDecodeError:
-                # Si falla el parseo, lo tratamos como texto normal
                 return jsonify({'text': response_text})
 
-        # 3. Si no es ninguna de las anteriores, es TEXTO NORMAL
         return jsonify({'text': response_text})
 
     except Exception as e:
