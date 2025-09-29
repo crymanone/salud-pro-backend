@@ -1,18 +1,16 @@
-# app.py (Versión final, robusta y con TODAS las importaciones)
+# app.py (Versión final, robusta y con "desenvoltorio" de JSON)
 
 import os
 import json
 import re
-# --- IMPORTACIONES AÑADIDAS PARA EL PARSEO ---
 from datetime import datetime, timedelta
 import calendar
-# ---------------------------------------------
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# --- PARSER DE FECHAS (MOVIMOS LA INTELIGENCIA AL BACKEND) ---
+# --- PARSER DE FECHAS ---
 MESES = {
     'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
     'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11,
@@ -64,14 +62,12 @@ def format_datetime_espanol(dt_obj: datetime) -> str:
     meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
     return f"el {dias[dt_obj.weekday()]} {dt_obj.day} de {meses[dt_obj.month - 1]} a las {dt_obj.strftime('%H:%M')}"
 
-# --- DEFINICIÓN DE LAS HERRAMIENTAS ---
+# --- HERRAMIENTAS Y SYSTEM PROMPT (Sin cambios) ---
 add_medication_tool = { "name": "add_medication", "description": "Añade un nuevo medicamento.", "parameters": { "type": "OBJECT", "properties": { "nombre": {"type": "STRING"}, "dosis": {"type": "STRING"}, "frecuencia_horas": {"type": "INTEGER"}, "duracion_dias": {"type": "INTEGER"}}, "required": ["nombre", "dosis", "frecuencia_horas", "duracion_dias"]}}
 update_contact_info_tool = { "name": "update_contact_info", "description": "Actualiza la información de contacto.", "parameters": { "type": "OBJECT", "properties": { "nombre_medico": {"type": "STRING"}, "telefono_centro_salud": {"type": "STRING"}}}}
 permanently_delete_medication_tool = { "name": "permanently_delete_medication", "description": "Elimina un medicamento para siempre.", "parameters": { "type": "OBJECT", "properties": { "nombre": {"type": "STRING"}}, "required": ["nombre"]}}
 query_medication_tool = { "name": "query_medication_info", "description": "Consulta información sobre un medicamento.", "parameters": { "type": "OBJECT", "properties": {"nombre": {"type": "STRING"}}, "required": ["nombre"]}}
 
-
-# --- SYSTEM PROMPT ---
 SYSTEM_INSTRUCTIONS = """
 Eres 'Asistente de Salud', una IA conversacional empática y segura.
 
@@ -94,48 +90,54 @@ def chat_proxy():
         genai.configure(api_key=api_key)
         
         model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash',
+            model_name='gemini-2.5-flash',
             tools=[add_medication_tool, update_contact_info_tool, permanently_delete_medication_tool, query_medication_tool],
             system_instruction=SYSTEM_INSTRUCTIONS
         )
         
         data = request.get_json()
-        if not data or 'messages' not in data: return jsonify({'error': 'Petición inválida.'}), 400
-
-        gemini_history = [{"role": msg['role'], 'parts': [{'text': msg.get('content', '')}]} for msg in data['messages'] if msg.get('role') in ['user', 'model']]
+        gemini_history = [{"role": msg['role'], 'parts': [{'text': msg.get('content', '')}]} for msg in data['messages']]
         if not gemini_history: return jsonify({'text': "Hola, ¿en qué puedo ayudarte hoy?"})
 
         response = model.generate_content(gemini_history)
         
-        # --- LÓGICA DE RESPUESTA SIMPLIFICADA Y ROBUSTA ---
+        # --- LÓGICA DE RESPUESTA FINAL Y ROBUSTA ---
         
         # 1. Comprobar si es una llamada a una HERRAMIENTA FORMAL
-        if response.candidates and response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
-            function_call = response.candidates[0].content.parts[0].function_call
+        if response.candidates.content.parts.function_call:
+            function_call = response.candidates.content.parts.function_call
             args = {key: value for key, value in function_call.args.items()}
             return jsonify({"action": function_call.name, "params": args})
 
-        # 2. Si no, obtener el texto y comprobar si es nuestra ACCIÓN PERSONALIZADA de agendar
+        # 2. Si no, obtener el texto y "desenvolverlo" para buscar nuestro JSON personalizado
         response_text = response.text
-        try:
-            response_json = json.loads(response_text)
-            if response_json.get("action") == "schedule_appointment":
-                fecha_texto = response_json.get("params", {}).get("fecha_texto", "")
-                parsed_datetime = parsear_fecha_hora(fecha_texto)
-                
-                if parsed_datetime:
-                    return jsonify({
-                        "action": "confirm_appointment",
-                        "params": {
-                            "parsed_datetime": parsed_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-                            "confirmation_string": f"Entendido, he anotado la fecha: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?"
-                        }
-                    })
-                else:
-                    return jsonify({"text": "No he podido entender esa fecha y hora. Por favor, dímela de nuevo."})
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            # 3. Si no es ninguna de las anteriores, es TEXTO NORMAL
-            return jsonify({'text': response_text})
+        
+        # Usamos regex para extraer de forma segura el JSON de dentro de ```json ... ```
+        match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+            try:
+                response_json = json.loads(json_str)
+                if response_json.get("action") == "schedule_appointment":
+                    fecha_texto = response_json.get("params", {}).get("fecha_texto", "")
+                    parsed_datetime = parsear_fecha_hora(fecha_texto)
+                    
+                    if parsed_datetime:
+                        return jsonify({
+                            "action": "confirm_appointment",
+                            "params": {
+                                "parsed_datetime": parsed_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+                                "confirmation_string": f"Entendido, he anotado la fecha: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?"
+                            }
+                        })
+                    else:
+                        return jsonify({"text": "No he podido entender esa fecha y hora. Por favor, dímela de nuevo."})
+            except json.JSONDecodeError:
+                # Si falla el parseo, lo tratamos como texto normal
+                return jsonify({'text': response_text})
+
+        # 3. Si no es ninguna de las anteriores, es TEXTO NORMAL
+        return jsonify({'text': response_text})
 
     except Exception as e:
         print(f"ERROR DETALLADO EN EL SERVIDOR: {e}") 
