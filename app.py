@@ -1,23 +1,28 @@
-# app.py (Versión final, con 'schedule_appointment' como herramienta formal)
+# app.py (Migrado al nuevo SDK google-genai)
 
 import os
 import json
 import re
 from datetime import datetime, timedelta
 import calendar
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+# --- NUEVAS IMPORTACIONES DE GOOGLE GENAI ---
+from google import genai
+from google.genai import types
+
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# --- PARSER DE FECHAS ---
+# --- PARSER DE FECHAS (Sin cambios) ---
 MESES = {'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12}
 NUMEROS_PALABRA = {'un': '1', 'una': '1', 'dos': '2', 'tres': '3', 'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 'ocho': '8', 'nueve': '9', 'diez': '10', 'once': '11', 'doce': '12'}
+
 def texto_a_numero(texto: str) -> str:
     for palabra, digito in NUMEROS_PALABRA.items():
         texto = texto.replace(palabra, digito)
     return texto
+
 def parsear_fecha_hora(texto: str) -> datetime or None:
     texto_norm = texto_a_numero(texto.lower())
     now = datetime.now()
@@ -47,18 +52,56 @@ def parsear_fecha_hora(texto: str) -> datetime or None:
     if not fecha_base: return None
     try: return datetime(fecha_base.year, fecha_base.month, fecha_base.day, hora, minuto)
     except ValueError: return None
+
 def format_datetime_espanol(dt_obj: datetime) -> str:
     dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
     meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
     return f"el {dias[dt_obj.weekday()]} {dt_obj.day} de {meses[dt_obj.month - 1]} a las {dt_obj.strftime('%H:%M')}"
 
-# --- DEFINICIÓN DE LAS HERRAMIENTAS ---
-add_medication_tool = {"name": "add_medication", "description": "Añade un nuevo medicamento.", "parameters": { "type": "OBJECT", "properties": { "nombre": {"type": "STRING"}, "dosis": {"type": "STRING"}, "frecuencia_horas": {"type": "INTEGER"}, "duracion_dias": {"type": "INTEGER"}}, "required": ["nombre", "dosis", "frecuencia_horas", "duracion_dias"]}}
-update_contact_info_tool = {"name": "update_contact_info", "description": "Actualiza la información de contacto.", "parameters": { "type": "OBJECT", "properties": { "nombre_medico": {"type": "STRING"}, "telefono_centro_salud": {"type": "STRING"}}}}
-# --- ¡LA NUEVA HERRAMIENTA OFICIAL! ---
-schedule_appointment_tool = {"name": "schedule_appointment", "description": "Interpreta el texto de una fecha y hora dadas por el usuario para agendar una cita.", "parameters": { "type": "OBJECT", "properties": {"fecha_texto": {"type": "STRING", "description": "El texto exacto que el usuario dijo sobre la fecha y hora. Ej: 'el siete de octubre a las 10:30 de la mañana'"}}, "required": ["fecha_texto"]}}
+# --- DEFINICIÓN DE LAS HERRAMIENTAS (NUEVO FORMATO SDK) ---
+add_medication_decl = types.FunctionDeclaration(
+    name="add_medication",
+    description="Añade un nuevo medicamento.",
+    parameters={
+        "type": "OBJECT",
+        "properties": {
+            "nombre": {"type": "STRING"},
+            "dosis": {"type": "STRING"},
+            "frecuencia_horas": {"type": "INTEGER"},
+            "duracion_dias": {"type": "INTEGER"}
+        },
+        "required": ["nombre", "dosis", "frecuencia_horas", "duracion_dias"]
+    }
+)
 
-# --- SYSTEM PROMPT (Ahora es más simple y directo) ---
+update_contact_info_decl = types.FunctionDeclaration(
+    name="update_contact_info",
+    description="Actualiza la información de contacto.",
+    parameters={
+        "type": "OBJECT",
+        "properties": {
+            "nombre_medico": {"type": "STRING"},
+            "telefono_centro_salud": {"type": "STRING"}
+        }
+    }
+)
+
+schedule_appointment_decl = types.FunctionDeclaration(
+    name="schedule_appointment",
+    description="Interpreta el texto de una fecha y hora dadas por el usuario para agendar una cita.",
+    parameters={
+        "type": "OBJECT",
+        "properties": {
+            "fecha_texto": {"type": "STRING", "description": "El texto exacto que el usuario dijo sobre la fecha y hora. Ej: 'el siete de octubre a las 10:30 de la mañana'"}
+        },
+        "required": ["fecha_texto"]
+    }
+)
+
+# Empaquetamos las declaraciones en una Tool de GenAI
+herramientas = [types.Tool(function_declarations=[add_medication_decl, update_contact_info_decl, schedule_appointment_decl])]
+
+# --- SYSTEM PROMPT ---
 SYSTEM_INSTRUCTIONS = """
 Eres 'Asistente de Salud PRO'. Tu propósito es ayudar al usuario a gestionar su salud usando tus herramientas. Eres empático y seguro.
 
@@ -71,37 +114,61 @@ Eres 'Asistente de Salud PRO'. Tu propósito es ayudar al usuario a gestionar su
 **REGLA DE SEGURIDAD:** Si el usuario te hace una pregunta sobre síntomas, salud o medicamentos que no encaja en ninguna herramienta, niégate educadamente y recomienda SIEMPRE consultar a un médico. Solo puedes dar consejos de bienestar muy genéricos (descansar, beber agua) para síntomas muy leves (cansancio, dolor de cabeza leve).
 """
 
-# --- AJUSTES DE SEGURIDAD ---
-SAFETY_SETTINGS = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE}
+# --- AJUSTES DE SEGURIDAD (NUEVO FORMATO SDK) ---
+SAFETY_SETTINGS = [
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+]
+
 
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
     try:
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key: return jsonify({'error': 'API key no configurada.'}), 500
-        genai.configure(api_key=api_key)
         
-        model = genai.GenerativeModel(
-            model_name='gemini-3-flash-preview',
-            # ¡AÑADIMOS LA NUEVA HERRAMIENTA A LA LISTA OFICIAL!
-            tools=[add_medication_tool, update_contact_info_tool, schedule_appointment_tool],
-            system_instruction=SYSTEM_INSTRUCTIONS,
-            safety_settings=SAFETY_SETTINGS
-        )
+        # --- INICIALIZACIÓN DEL NUEVO CLIENTE ---
+        client = genai.Client(api_key=api_key)
         
         data = request.get_json()
-        gemini_history = [{"role": msg['role'], 'parts': [{'text': msg.get('content', '')}]} for msg in data['messages']]
+        gemini_history = []
+        
+        # Mapeamos el historial al nuevo formato types.Content
+        for msg in data.get('messages', []):
+            role = msg['role']
+            text_content = msg.get('content', '')
+            gemini_history.append(
+                types.Content(role=role, parts=[types.Part.from_text(text=text_content)])
+            )
+            
         if not gemini_history: return jsonify({'text': "Hola, ¿en qué puedo ayudarte hoy?"})
 
-        response = model.generate_content(gemini_history, request_options={"timeout": 100})
-        
-        # --- LÓGICA DE RESPUESTA FINAL Y UNIFICADA ---
-        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
-            function_call = response.candidates[0].content.parts[0].function_call
-            action_name = function_call.name
-            args = {key: value for key, value in function_call.args.items()}
+        # --- CONFIGURACIÓN DEL MODELO ---
+        config = types.GenerateContentConfig(
+            tools=herramientas,
+            system_instruction=SYSTEM_INSTRUCTIONS,
+            safety_settings=SAFETY_SETTINGS,
+            temperature=0.5
+        )
 
-            # SI LA IA LLAMA A NUESTRA NUEVA HERRAMIENTA, LA PROCESAMOS AQUÍ
+        # --- GENERAR RESPUESTA ---
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=gemini_history,
+            config=config
+        )
+        
+        # --- LÓGICA DE RESPUESTA ---
+        
+        # 1. Comprobar si la IA ha invocado una herramienta (Nuevo formato de respuesta)
+        if response.function_calls:
+            function_call = response.function_calls[0]
+            action_name = function_call.name
+            args = function_call.args if function_call.args else {}
+            
+            # SI LA IA LLAMA A NUESTRA HERRAMIENTA DE CITA, LA PROCESAMOS AQUÍ
             if action_name == "schedule_appointment":
                 fecha_texto = args.get("fecha_texto", "")
                 parsed_datetime = parsear_fecha_hora(fecha_texto)
@@ -117,11 +184,32 @@ def chat_proxy():
                 else:
                     return jsonify({"text": "No he podido entender esa fecha y hora. Por favor, dímela de nuevo."})
             else:
-                # Para el resto de herramientas, pasamos la acción a la app
+                # Para el resto de herramientas, pasamos la acción a la app de Kivy
                 return jsonify({"action": action_name, "params": args})
 
-        # Si no hay llamada a función, es texto normal
-        return jsonify({'text': response.text})
+        # 2. Si no hay llamada a función, procesar texto
+        response_text = response.text if response.text else ""
+        response_text = response_text.strip()
+        response_json = None
+        
+        if response_text.startswith('{') and response_text.endswith('}'):
+            try: response_json = json.loads(response_text)
+            except json.JSONDecodeError: pass
+        if response_json is None:
+            match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if match:
+                try: response_json = json.loads(match.group(0))
+                except json.JSONDecodeError: pass
+        
+        if response_json and response_json.get("action") == "schedule_appointment":
+            fecha_texto = response_json.get("params", {}).get("fecha_texto", "")
+            parsed_datetime = parsear_fecha_hora(fecha_texto)
+            if parsed_datetime:
+                return jsonify({ "action": "confirm_appointment", "params": { "parsed_datetime": parsed_datetime.strftime("%Y-%m-%d %H:%M:%S"), "confirmation_string": f"Entendido, he anotado la fecha: {format_datetime_espanol(parsed_datetime)}. Ahora, ¿dónde será la cita?" }})
+            else:
+                return jsonify({"text": "No he podido entender esa fecha y hora. Por favor, dímela de nuevo."})
+        
+        return jsonify({'text': response_text})
 
     except Exception as e:
         print(f"ERROR DETALLADO EN EL SERVIDOR: {e}") 
@@ -129,4 +217,4 @@ def chat_proxy():
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Servidor del Asistente de Salud PRO funcionando.", 200
+    return "Servidor del Asistente de Salud PRO funcionando con la nueva API GenAI.", 200
