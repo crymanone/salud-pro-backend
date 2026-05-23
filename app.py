@@ -1,4 +1,4 @@
-# app.py (Migrado al nuevo SDK google-genai)
+# app.py (Versión limpia con el NUEVO SDK google.genai)
 
 import os
 import json
@@ -14,7 +14,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# --- PARSER DE FECHAS (Sin cambios) ---
+# --- PARSER DE FECHAS ---
 MESES = {'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12}
 NUMEROS_PALABRA = {'un': '1', 'una': '1', 'dos': '2', 'tres': '3', 'cuatro': '4', 'cinco': '5', 'seis': '6', 'siete': '7', 'ocho': '8', 'nueve': '9', 'diez': '10', 'once': '11', 'doce': '12'}
 
@@ -122,7 +122,6 @@ SAFETY_SETTINGS = [
     types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
 ]
 
-
 @app.route('/chat', methods=['POST'])
 def chat_proxy():
     try:
@@ -135,7 +134,6 @@ def chat_proxy():
         data = request.get_json()
         gemini_history = []
         
-        # Mapeamos el historial al nuevo formato types.Content
         for msg in data.get('messages', []):
             role = msg['role']
             text_content = msg.get('content', '')
@@ -161,19 +159,15 @@ def chat_proxy():
         )
         
         # --- LÓGICA DE RESPUESTA ---
-        
-        # 1. Comprobar si la IA ha invocado una herramienta (Nuevo formato de respuesta)
         if response.function_calls:
             function_call = response.function_calls[0]
             action_name = function_call.name
             args = function_call.args if function_call.args else {}
             
-            # SI LA IA LLAMA A NUESTRA HERRAMIENTA DE CITA, LA PROCESAMOS AQUÍ
             if action_name == "schedule_appointment":
                 fecha_texto = args.get("fecha_texto", "")
                 parsed_datetime = parsear_fecha_hora(fecha_texto)
                 if parsed_datetime:
-                    # Devolvemos el JSON que la app espera
                     return jsonify({
                         "action": "confirm_appointment",
                         "params": { 
@@ -184,10 +178,8 @@ def chat_proxy():
                 else:
                     return jsonify({"text": "No he podido entender esa fecha y hora. Por favor, dímela de nuevo."})
             else:
-                # Para el resto de herramientas, pasamos la acción a la app de Kivy
                 return jsonify({"action": action_name, "params": args})
 
-        # 2. Si no hay llamada a función, procesar texto
         response_text = response.text if response.text else ""
         response_text = response_text.strip()
         response_json = None
