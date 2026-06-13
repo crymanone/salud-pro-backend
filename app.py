@@ -160,7 +160,7 @@ def chat_proxy():
 
         # --- GENERAR RESPUESTA ---
         response = client.models.generate_content(
-            model='gemini-3-flash-preview',
+            model='gemini-3.1-flash-lite',
             contents=gemini_history,
             config=config
         )
